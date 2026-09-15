@@ -36,7 +36,7 @@ def blocked_pair(db,a,b):
     ))).scalar_one_or_none() is not None
 
 @app.get("/",response_class=HTMLResponse)
-def home(request:Request): return templates.TemplateResponse("index.html",{"request":request,"app_name":settings.app_name})
+def home(request:Request): return templates.TemplateResponse("index.html",{"request":request,"app_name":settings.app_name,"is_production":settings.environment=="production","bot_username":settings.telegram_bot_username})
 
 @app.get("/admin",response_class=HTMLResponse)
 def admin_page(request:Request): return templates.TemplateResponse("admin.html",{"request":request})
@@ -195,6 +195,19 @@ def v6_me(authorization:str|None=Header(None),db:Session=Depends(get_db)):
     return {"id":u.id,"status":u.status,"role":u.role,"hidden":u.is_hidden,"contact_reveal":u.contact_reveal,
             "profile":({"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type,"looking_for":p.looking_for,"about":p.about} if p else None),
             "photos":_photo_urls(db,u.id)}
+@app.post("/api/v6/profile")
+def v6_create_profile(alias:str=Form(...),age:int=Form(...),city:str=Form(...),profile_type:str=Form(...),looking_for:str=Form(...),about:str=Form(""),authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization)
+    if age<18: raise HTTPException(403,"Только 18+")
+    if u.status not in {"NEW","AGE_CONFIRMED","REVISION_REQUIRED"}: raise HTTPException(409,"Недоступно для текущего статуса")
+    existing=db.execute(select(Profile).where(Profile.user_id==u.id)).scalar_one_or_none()
+    if existing:
+        existing.alias=alias.strip();existing.age=age;existing.city=city.strip();existing.profile_type=profile_type;existing.looking_for=looking_for;existing.about=about
+    else:
+        db.add(Profile(user_id=u.id,alias=alias.strip(),age=age,city=city.strip(),profile_type=profile_type,looking_for=looking_for,about=about))
+        db.add(Consent(user_id=u.id,kind="RULES_18_PLUS",version=settings.rules_version))
+    u.status="PROFILE_CREATED"; db.commit()
+    return {"status":u.status}
 @app.post("/api/v6/verification")
 def v6_start_verification(authorization:str|None=Header(None),db:Session=Depends(get_db)):
     u=v6_current(db,authorization); return start_verification(u.id,db)

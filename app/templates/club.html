@@ -1,10 +1,84 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Private Club</title><link rel="stylesheet" href="/static/app.css"><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body>
-<main class="shell"><header><div class="brand"><span class="mark">P</span><div><b>PRIVATE CLUB</b><small>members area · 18+</small></div></div><span class="pill">Verified</span></header>
-<section id="gate" class="card"><h2>Проверка доступа</h2><p class="muted">Telegram-сессия проверяется сервером. Каталог доступен только со статусом APPROVED.</p><button onclick="login()">Продолжить</button><div id="msg"></div></section>
-<section id="members" hidden><div class="toolbar"><div><span class="eyebrow">DISCOVER</span><h2>Участники</h2></div><button class="secondary compact" onclick="loadCatalog()">Обновить</button></div><div id="cards" class="profilegrid"></div></section>
+<main class="shell">
+<header><div class="brand"><span class="mark">P</span><div><b>PRIVATE CLUB</b><small>members area · 18+</small></div></div><span class="pill" id="statusPill">Verified</span></header>
+
+<section id="gate" class="card"><h2>Проверка доступа</h2><p class="muted">Сессия проверяется сервером на основании подписанных данных Telegram. Откройте эту страницу как Telegram Mini App.</p><button onclick="login()">Продолжить</button><div id="msg"></div></section>
+
+<section id="profileForm" class="card" hidden><h2>Анкета</h2><p class="muted">Минимум данных, необходимых для участия в клубе. Фото профиля отправляются прямо в чат с ботом.</p>
+<form id="pform"><input name="alias" placeholder="Псевдоним" required><div class="grid"><input name="age" type="number" min="18" max="99" placeholder="Возраст" required><input name="city" placeholder="Город" required></div><select name="profile_type"><option>Пара</option><option>Женщина</option><option>Мужчина</option><option>Другое</option></select><input name="looking_for" placeholder="Кого / какой формат ищете" required><textarea name="about" placeholder="Коротко о себе"></textarea><button>Сохранить анкету</button></form></section>
+
+<section id="pending" class="card" hidden><h2>Статус: <span id="pendingStatus"></span></h2><p class="muted" id="pendingHint"></p><button id="startVerifyBtn" onclick="startVerification()" hidden>Начать верификацию</button></section>
+
+<nav id="tabs" class="pill" hidden style="display:flex;gap:8px;width:fit-content;margin:0 0 20px">
+<button class="secondary compact" onclick="showTab('catalog')">Каталог</button>
+<button class="secondary compact" onclick="showTab('matches')">Мэтчи</button>
+<button class="secondary compact" onclick="showTab('settings')">Настройки</button>
+</nav>
+
+<section id="tab-catalog" hidden><div class="toolbar"><div><span class="eyebrow">DISCOVER</span><h2>Участники</h2></div><button class="secondary compact" onclick="loadCatalog()">Обновить</button></div><div id="cards" class="profilegrid"></div></section>
+
+<section id="tab-matches" hidden><div class="toolbar"><div><span class="eyebrow">MUTUAL</span><h2>Мэтчи</h2></div><button class="secondary compact" onclick="loadMatches()">Обновить</button></div><div id="matchList"></div></section>
+
+<section id="tab-settings" hidden class="card">
+<h2>Настройки</h2>
+<label class="check"><input type="checkbox" id="hiddenToggle" onchange="setVisibility()"> Скрыть мою анкету из каталога</label>
+<label class="check" style="margin-top:10px"><input type="checkbox" id="contactToggle" onchange="setContactReveal()"> Открывать контакт при взаимном согласии обеих сторон</label>
+<h2 style="margin-top:28px">Конфиденциальность</h2><p class="muted">Контакт виден собеседнику из мэтча только если оба включили этот параметр. <a href="/rules">Правила клуба</a>.</p>
+<h2 style="margin-top:28px">Удаление аккаунта</h2><p class="muted">Анкета, фотографии и верификационные материалы будут удалены согласно политике хранения. Действие необратимо.</p>
+<button class="danger" onclick="deleteAccount()">Удалить аккаунт</button>
+</section>
+
 </main><script>
-let token='';
-async function login(){const init=window.Telegram?.WebApp?.initData||'';if(!init){msg.innerHTML='<div class="error">Откройте страницу как Telegram Mini App.</div>';return}const fd=new FormData();fd.append('init_data',init);const r=await fetch('/api/v4/auth/telegram',{method:'POST',body:fd});const j=await r.json();if(!r.ok){msg.innerHTML='<div class="error">'+j.detail+'</div>';return}token=j.access_token;if(j.status!=='APPROVED'){msg.innerHTML='<div class="success">Статус: '+j.status+'. Каталог откроется после одобрения.</div>';return}gate.hidden=true;members.hidden=false;loadCatalog()}
-async function loadCatalog(){const r=await fetch('/api/v4/catalog',{headers:{Authorization:'Bearer '+token}});const a=await r.json();cards.innerHTML=a.length?a.map(p=>`<article class="profilecard"><div class="photoPlaceholder"><span>${p.alias.slice(0,1).toUpperCase()}</span></div><div class="profilebody"><span class="pill">${p.profile_type}</span><h3>${p.alias}, ${p.age}</h3><p>${p.city}</p><p class="muted">${p.about||'Описание пока не заполнено'}</p><small>Ищет: ${p.looking_for}</small><div class="swipeactions"><button class="secondary">Пропустить</button><button onclick="like(${p.user_id})">Нравится ♥</button></div></div></article>`).join(''):'<div class="card">Подходящих анкет пока нет.</div>'}
-async function like(id){const r=await fetch('/api/v4/like/'+id,{method:'POST',headers:{Authorization:'Bearer '+token}});const j=await r.json();if(j.matched)alert('Взаимная симпатия! Контакт открывается только по взаимному согласию.');loadCatalog()}
+let token='',me=null;
+const auth=()=>({Authorization:'Bearer '+token});
+async function login(){
+  const init=window.Telegram?.WebApp?.initData||'';
+  if(!init){msg.innerHTML='<div class="error">Откройте страницу как Telegram Mini App.</div>';return}
+  const fd=new FormData();fd.append('init_data',init);
+  const r=await fetch('/api/v6/auth/telegram',{method:'POST',body:fd});
+  const j=await r.json();
+  if(!r.ok){msg.innerHTML='<div class="error">'+(j.detail||'Ошибка входа')+'</div>';return}
+  token=j.access_token; await refresh();
+}
+async function refresh(){
+  const r=await fetch('/api/v6/me',{headers:auth()});
+  if(!r.ok){gate.hidden=false;return}
+  me=await r.json();
+  statusPill.textContent=me.status;
+  gate.hidden=true; profileForm.hidden=true; pending.hidden=true; tabs.hidden=true;
+  ['tab-catalog','tab-matches','tab-settings'].forEach(id=>document.getElementById(id).hidden=true);
+  if(!me.profile && ['NEW','AGE_CONFIRMED'].includes(me.status)){
+    profileForm.hidden=false;
+    return;
+  }
+  if(me.status==='APPROVED'){
+    tabs.hidden=false; hiddenToggle.checked=me.hidden; contactToggle.checked=me.contact_reveal;
+    showTab('catalog'); return;
+  }
+  pending.hidden=false;
+  const hints={PROFILE_CREATED:'Анкета сохранена. Начните верификацию, чтобы получить доступ к каталогу.',
+    REVISION_REQUIRED:'Администратор запросил повторную верификацию. Начните её заново.',
+    VERIFICATION_PENDING:'Отправьте боту фото или короткое видео с кодом верификации.',
+    ADMIN_REVIEW:'Анкета на проверке администратора. Обычно это занимает немного времени.',
+    SUSPENDED:'Доступ временно ограничен администрацией.',
+    REJECTED:'Заявка не одобрена.',BANNED:'Доступ прекращён администрацией.'};
+  pendingStatus.textContent=me.status; pendingHint.textContent=hints[me.status]||'';
+  startVerifyBtn.hidden=!['PROFILE_CREATED','REVISION_REQUIRED'].includes(me.status);
+}
+pform.onsubmit=async e=>{e.preventDefault();const r=await fetch('/api/v6/profile',{method:'POST',headers:auth(),body:new FormData(pform)});const j=await r.json();if(!r.ok){alert(j.detail||'Ошибка');return}await refresh()};
+async function startVerification(){const r=await fetch('/api/v6/verification',{method:'POST',headers:auth()});const j=await r.json();if(r.ok)alert(j.instruction);await refresh()}
+function showTab(name){['catalog','matches','settings'].forEach(t=>document.getElementById('tab-'+t).hidden=t!==name);if(name==='catalog')loadCatalog();if(name==='matches')loadMatches()}
+async function loadCatalog(){
+  const r=await fetch('/api/v6/catalog',{headers:auth()});const a=await r.json();
+  cards.innerHTML=a.length?a.map(p=>`<article class="profilecard"><div class="photoPlaceholder">${p.photos&&p.photos[0]?`<img src="${p.photos[0]}" style="width:100%;height:100%;object-fit:cover">`:`<span>${p.alias.slice(0,1).toUpperCase()}</span>`}</div><div class="profilebody"><span class="pill">${p.profile_type}</span><h3>${p.alias}, ${p.age}</h3><p>${p.city}</p><p class="muted">${p.about||'Описание пока не заполнено'}</p><small>Ищет: ${p.looking_for}</small><div class="swipeactions"><button class="secondary" onclick="reportUser(${p.user_id})">Пожаловаться</button><button onclick="like(${p.user_id})">Нравится ♥</button></div><button class="secondary compact" style="margin-top:8px" onclick="blockUser(${p.user_id})">Заблокировать</button></div></article>`).join(''):'<div class="card">Подходящих анкет пока нет.</div>'}
+async function like(id){const r=await fetch('/api/v6/like/'+id,{method:'POST',headers:auth()});const j=await r.json();if(j.matched)alert('Взаимная симпатия! Контакт открывается только по взаимному согласию.');loadCatalog()}
+async function blockUser(id){if(!confirm('Заблокировать участника?'))return;await fetch('/api/v6/block/'+id,{method:'POST',headers:auth()});loadCatalog()}
+async function reportUser(id){const reason=prompt('Причина жалобы');if(!reason)return;const fd=new FormData();fd.append('reason',reason);await fetch('/api/v6/complaint/'+id,{method:'POST',headers:auth(),body:fd});alert('Жалоба отправлена администрации.')}
+async function loadMatches(){
+  const r=await fetch('/api/v6/matches',{headers:auth()});const a=await r.json();
+  matchList.innerHTML=a.length?a.map(m=>`<div class="card"><b>${m.alias}</b><p class="muted">${m.contact?('Контакт: '+m.contact):'Контакт скрыт до взаимного согласия обеих сторон.'}</p></div>`).join(''):'<div class="card muted">Мэтчей пока нет.</div>'}
+async function setVisibility(){const fd=new FormData();fd.append('hidden',hiddenToggle.checked);await fetch('/api/v6/visibility',{method:'POST',headers:auth(),body:fd})}
+async function setContactReveal(){const fd=new FormData();fd.append('value',contactToggle.checked);await fetch('/api/v6/contact-reveal',{method:'POST',headers:auth(),body:fd})}
+async function deleteAccount(){if(!confirm('Удалить аккаунт безвозвратно?'))return;await fetch('/api/v6/me',{method:'DELETE',headers:auth()});token='';location.reload()}
+if(window.Telegram?.WebApp)Telegram.WebApp.ready();
 </script></body></html>

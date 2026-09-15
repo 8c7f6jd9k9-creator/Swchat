@@ -1,6 +1,6 @@
 import asyncio
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from sqlalchemy import select
 from .config import settings
@@ -41,6 +41,16 @@ async def age_yes(c:types.CallbackQuery):
     rows=[{"text":"Открыть клуб","web_app":WebAppInfo(url=settings.public_base_url)}] if settings.public_base_url.startswith("https://") else []
     await c.message.edit_text("18+ подтверждено. Заполните анкету. Верификационный материал используется только для проверки и не показывается другим участникам.",
         reply_markup=keyboard(rows) if rows else None); await c.answer()
+
+@dp.message(Command("staff"))
+async def staff_entry(m:types.Message):
+    allowlist={int(x.strip()) for x in settings.staff_telegram_ids.split(",") if x.strip().isdigit()}
+    if m.from_user.id not in allowlist:
+        return  # silent: don't reveal that a staff surface exists to non-staff
+    if not settings.public_base_url.startswith("https://"):
+        await m.answer("Панель модерации доступна только через HTTPS Mini App."); return
+    await m.answer("Панель модерации Private Club. Потребуется код второго фактора.",
+        reply_markup=keyboard([{"text":"Открыть панель","web_app":WebAppInfo(url=settings.public_base_url+"/admin")}]))
 
 @dp.message(F.photo | F.video)
 async def media(m:types.Message,bot:Bot):

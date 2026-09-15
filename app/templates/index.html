@@ -1,12 +1,29 @@
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{{ app_name }}</title><link rel="stylesheet" href="/static/app.css"><script src="https://telegram.org/js/telegram-web-app.js"></script></head><body>
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>{{ app_name }}</title><link rel="stylesheet" href="/static/app.css"></head><body>
 <main class="shell">
 <header><div class="brand"><span class="mark">P</span><div><b>PRIVATE CLUB</b><small>verified community · 18+</small></div></div><span class="pill">Закрытый доступ</span></header>
 <section class="hero"><div class="eyebrow">PRIVATE · VERIFIED · CONSENT</div><h1>Знакомства без публичности и случайных людей.</h1><p>Анкеты становятся доступны только совершеннолетним участникам после ручной проверки администрацией.</p><div class="trust"><span>✓ 18+</span><span>✓ Верификация</span><span>✓ Ручной отбор</span><span>✓ Жалобы и блокировка</span></div></section>
-<section class="card"><h2>Демонстрационная анкета</h2><p class="muted">В Telegram идентификация выполняется автоматически через Mini App. Этот режим нужен для локальной проверки.</p>
-<form id="reg"><input name="alias" placeholder="Псевдоним" required><div class="grid"><input name="age" type="number" min="18" max="99" placeholder="Возраст" required><input name="city" placeholder="Город" required></div><select name="profile_type"><option>Пара</option><option>Женщина</option><option>Мужчина</option><option>Другое</option></select><input name="looking_for" placeholder="Кого / какой формат ищете" required><textarea name="about" placeholder="Коротко о себе"></textarea><label class="check"><input type="checkbox" required> Мне исполнилось 18 лет, правила и условия конфиденциальности понятны.</label><button>Создать анкету</button></form><div id="result"></div></section>
-<section class="steps"><article><b>01</b><h3>Анкета</h3><p>Минимум необходимых данных.</p></article><article><b>02</b><h3>Проверка</h3><p>Отдельный материал с одноразовым кодом.</p></article><article><b>03</b><h3>Решение</h3><p>Ручное одобрение администратора.</p></article><article><b>04</b><h3>Доступ</h3><p>Каталог, лайки и мэтчи только после APPROVED.</p></article></section>
+
+<section class="card">
+<h2>Как попасть в клуб</h2>
+<p class="muted">Регистрация, подтверждение возраста и верификация проходят в Telegram-боте — это единственный способ создать аккаунт. После одобрения администрацией каталог участников и мэтчи открываются в Mini App.</p>
+{% if bot_username %}
+<a href="https://t.me/{{ bot_username }}"><button>Открыть бота в Telegram</button></a>
+{% else %}
+<p class="muted">Ссылка на бота появится после подключения Telegram-бота администрацией клуба.</p>
+{% endif %}
+</section>
+
+{% if not is_production %}
+<section class="card"><h2>Локальный демо-режим</h2><p class="muted">Этот блок виден только при ENVIRONMENT ≠ production и используется исключительно для локальной разработки — он обходит проверку Telegram и не является частью продакшен-потока.</p>
+<form id="reg"><input name="alias" placeholder="Псевдоним" required><div class="grid"><input name="age" type="number" min="18" max="99" placeholder="Возраст" required><input name="city" placeholder="Город" required></div><select name="profile_type"><option>Пара</option><option>Женщина</option><option>Мужчина</option><option>Другое</option></select><input name="looking_for" placeholder="Кого / какой формат ищете" required><textarea name="about" placeholder="Коротко о себе"></textarea><label class="check"><input type="checkbox" required> Мне исполнилось 18 лет, правила и условия конфиденциальности понятны.</label><button>Создать демо-анкету</button></form><div id="result"></div></section>
+{% endif %}
+
+<section class="steps"><article><b>01</b><h3>Бот</h3><p>18+, анкета, верификация.</p></article><article><b>02</b><h3>Проверка</h3><p>Отдельный материал с одноразовым кодом.</p></article><article><b>03</b><h3>Решение</h3><p>Ручное одобрение администратора.</p></article><article><b>04</b><h3>Mini App</h3><p>Каталог, лайки и мэтчи только после APPROVED.</p></article></section>
 <footer><a href="/rules">Правила и конфиденциальность</a><span>18+ · добровольное участие</span></footer></main>
+{% if not is_production %}
 <script>
 const f=document.getElementById('reg'),r=document.getElementById('result');
 f.onsubmit=async e=>{e.preventDefault();let x=await fetch('/api/demo/register',{method:'POST',body:new FormData(f)});let j=await x.json();if(!x.ok){r.innerHTML='<div class="error">'+(j.detail||'Ошибка')+'</div>';return}let v=await fetch('/api/users/'+j.user_id+'/verification',{method:'POST'});let q=await v.json();r.innerHTML='<div class="success"><b>Анкета #'+j.user_id+' создана.</b><br>'+q.instruction+'<br><small>Каталог останется закрыт до решения администратора.</small></div>'}
-</script></body></html>
+</script>
+{% endif %}
+</body></html>

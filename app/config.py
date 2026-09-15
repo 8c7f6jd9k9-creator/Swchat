@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./club.db"
     secret_key: str = "change-me"
     telegram_bot_token: str = ""
+    telegram_bot_username: str = ""
     public_base_url: str = "http://localhost:8000"
     rules_version: str = "1.0"
     verification_retention_days: int = 7
