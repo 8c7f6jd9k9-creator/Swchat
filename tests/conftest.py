@@ -15,7 +15,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_club.db")
 os.environ.setdefault("SECRET_KEY", "unit-test-secret-not-for-production")
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-bot-token-0000000000")
-os.environ.setdefault("STAFF_TELEGRAM_IDS", "9001,9002,9003")
+os.environ.setdefault("STAFF_TELEGRAM_IDS", "9001,9002,9003,9004")
 os.environ.setdefault("STAFF_TOTP_SECRET", "JBSWY3DPEHPK3PXPJBSWY3DP")
 # Sessions/rate limiting are genuinely Redis-backed (no in-memory fallback -
 # see app/redis_store.py), so the suite needs a real Redis to run against.

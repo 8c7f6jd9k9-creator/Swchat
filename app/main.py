@@ -143,7 +143,29 @@ def complaint(uid:int,target:int,reason:str=Form(...),db:Session=Depends(get_db)
     db.commit(); return {"ok":True}
 
 def delete_account(uid:int,db:Session=Depends(get_db)):
-    u=user(db,uid); u.status="DELETED"; u.is_hidden=True; u.contact_reveal=False
+    u=user(db,uid)
+    from .services.object_storage import delete_object
+    from .redis_store import revoke_all_sessions
+
+    p=db.execute(select(Profile).where(Profile.user_id==uid)).scalar_one_or_none()
+    if p:
+        p.alias="Удалённый участник"; p.about=""; p.city=""; p.looking_for=""
+
+    for photo in db.execute(select(ProfilePhoto).where(ProfilePhoto.user_id==uid)).scalars().all():
+        if photo.storage_key:
+            try:
+                delete_object(photo.storage_key)
+                photo.storage_key=None
+            except Exception:
+                pass  # object store unreachable: keep the key so the retention worker retries the real delete
+        photo.status="REJECTED"; photo.approved=False
+
+    for v in db.execute(select(Verification).where(Verification.user_id==uid)).scalars().all():
+        _clear_verification_media(v)
+
+    u.status="DELETED"; u.is_hidden=True; u.contact_reveal=False
+    u.telegram_id=None; u.telegram_username=None
+    revoke_all_sessions(uid)
     db.add(Audit(actor=f"user:{uid}",action="delete_account",target_user_id=uid))
     db.commit(); return {"status":"DELETED"}
 
@@ -237,7 +259,9 @@ def v6_complaint(target:int,reason:str=Form(...),authorization:str|None=Header(N
     u=v6_current(db,authorization); v6_rate(f"complaint:{u.id}",10,3600); return complaint(u.id,target,reason,db)
 @app.delete("/api/v6/me")
 def v6_delete(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    u=v6_current(db,authorization); v6_revoke(authorization[7:]); return delete_account(u.id,db)
+    # delete_account() revokes every active session for this user (not just
+    # the current one), so no separate v6_revoke() call is needed here.
+    u=v6_current(db,authorization); return delete_account(u.id,db)
 
 # ---- Staff API: Telegram allowlist + TOTP second factor + transactional outbox ----
 # Staff sign-in is v8's TOTP-gated /api/v8/staff/auth/telegram only - there is no
@@ -302,6 +326,9 @@ def v7_staff_moderate(uid:int,decision:str,reason:str=Form(""),authorization:str
     if decision not in mapping: raise HTTPException(400,"Неизвестное решение")
     if decision=="ban" and staff.role!="ADMIN": raise HTTPException(403,"Permanent ban requires ADMIN")
     u=user(db,uid);u.status=mapping[decision]
+    if decision in {"ban","suspend"}:
+        from .redis_store import revoke_all_sessions
+        revoke_all_sessions(uid)
     v=db.execute(select(Verification).where(Verification.user_id==uid).order_by(Verification.id.desc())).scalars().first()
     if v:
         v.status={"approve":"APPROVED","reject":"REJECTED","revise":"REVISION_REQUIRED"}.get(decision,v.status)

@@ -1,14 +1,26 @@
 
 from datetime import timedelta
 import io, secrets
+import urllib3
 from minio import Minio
 from ..config import settings
+
+# Small, fixed retry/timeout budget: the default urllib3 policy retries
+# repeatedly with backoff, which turned a single unreachable-MinIO call into
+# a 10+ second stall on a request thread (e.g. account deletion). Callers
+# that need "delete this object" to be reliable over time already retry at
+# a higher level (the retention worker), so a fast failure here is correct.
+_http_client = urllib3.PoolManager(
+    timeout=urllib3.Timeout(connect=2, read=5),
+    retries=urllib3.Retry(total=1, backoff_factor=0.2),
+)
 
 def _client():
     return Minio(settings.s3_endpoint,
                  access_key=settings.s3_access_key,
                  secret_key=settings.s3_secret_key,
-                 secure=settings.s3_secure)
+                 secure=settings.s3_secure,
+                 http_client=_http_client)
 
 def ensure_bucket():
     c=_client()
