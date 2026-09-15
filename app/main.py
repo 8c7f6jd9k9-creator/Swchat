@@ -19,6 +19,16 @@ from .production_guard import validate_production
 validate_production()
 from .middleware.security_headers import SecurityHeaders
 app.add_middleware(SecurityHeaders)
+if settings.environment=="production":
+    # Reject requests carrying a forged/unexpected Host header (cache
+    # poisoning, absolute-URL confusion) instead of trusting whatever the
+    # client sends. Derived from PUBLIC_BASE_URL, which production_guard()
+    # above has already required to be set.
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+    from urllib.parse import urlparse
+    _host = urlparse(settings.public_base_url).hostname
+    if _host:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=[_host])
 templates=Jinja2Templates(directory="app/templates")
 
 def user(db, uid):
@@ -219,7 +229,7 @@ def v6_me(authorization:str|None=Header(None),db:Session=Depends(get_db)):
             "photos":_photo_urls(db,u.id)}
 @app.post("/api/v6/profile")
 def v6_create_profile(alias:str=Form(...),age:int=Form(...),city:str=Form(...),profile_type:str=Form(...),looking_for:str=Form(...),about:str=Form(""),authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    u=v6_current(db,authorization)
+    u=v6_current(db,authorization); v6_rate(f"profile:{u.id}",20,3600)
     if age<18: raise HTTPException(403,"Только 18+")
     if u.status not in {"NEW","AGE_CONFIRMED","REVISION_REQUIRED"}: raise HTTPException(409,"Недоступно для текущего статуса")
     existing=db.execute(select(Profile).where(Profile.user_id==u.id)).scalar_one_or_none()
@@ -232,7 +242,7 @@ def v6_create_profile(alias:str=Form(...),age:int=Form(...),city:str=Form(...),p
     return {"status":u.status}
 @app.post("/api/v6/verification")
 def v6_start_verification(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    u=v6_current(db,authorization); return start_verification(u.id,db)
+    u=v6_current(db,authorization); v6_rate(f"verification:{u.id}",10,3600); return start_verification(u.id,db)
 @app.get("/api/v6/catalog")
 def v6_catalog(city:str|None=None,min_age:int=18,max_age:int=99,authorization:str|None=Header(None),db:Session=Depends(get_db)):
     u=v6_current(db,authorization); approved(u); v6_rate(f"catalog:{u.id}",60,60)

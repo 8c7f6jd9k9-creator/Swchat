@@ -34,11 +34,49 @@ def test_demo_and_uid_path_routes_disabled_in_production():
     env = dict(os.environ, ENVIRONMENT="production", DATABASE_URL="sqlite:///./_prod_route_check.db",
                SECRET_KEY="x"*32, STAFF_TELEGRAM_IDS="9001", STAFF_TOTP_SECRET="y"*16,
                S3_SECRET_KEY="z"*16, CLAMAV_HOST="localhost",
+               TELEGRAM_BOT_TOKEN="prod-check-token", PUBLIC_BASE_URL="https://club.example.com",
                REDIS_URL=os.environ.get("REDIS_URL","redis://localhost:6379/0"))
     code = textwrap.dedent("""
         from app.main import app
         paths=[r.path for r in app.routes if hasattr(r,'path')]
         assert not any('demo' in p or p.startswith('/api/users/') for p in paths), paths
+        print("OK")
+    """)
+    result = subprocess.run([sys.executable,"-c",code], cwd=os.path.dirname(os.path.dirname(__file__)),
+                             env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode==0 and "OK" in result.stdout, result.stdout+result.stderr
+
+
+def test_production_rejects_incomplete_config():
+    import os, subprocess, sys, textwrap
+    # Missing TELEGRAM_BOT_TOKEN and an http:// PUBLIC_BASE_URL should both
+    # be rejected at startup rather than silently degrading in production.
+    env = dict(os.environ, ENVIRONMENT="production", DATABASE_URL="sqlite:///./_prod_guard_check.db",
+               SECRET_KEY="x"*32, STAFF_TELEGRAM_IDS="9001", STAFF_TOTP_SECRET="y"*16,
+               S3_SECRET_KEY="z"*16, CLAMAV_HOST="localhost", PUBLIC_BASE_URL="http://club.example.com",
+               REDIS_URL=os.environ.get("REDIS_URL","redis://localhost:6379/0"))
+    env.pop("TELEGRAM_BOT_TOKEN", None)
+    result = subprocess.run([sys.executable,"-c","from app.main import app"],
+                             cwd=os.path.dirname(os.path.dirname(__file__)), env=env,
+                             capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert "TELEGRAM_BOT_TOKEN" in result.stderr and "PUBLIC_BASE_URL" in result.stderr
+
+
+def test_trusted_host_middleware_rejects_forged_host_in_production():
+    import os, subprocess, sys, textwrap
+    env = dict(os.environ, ENVIRONMENT="production", DATABASE_URL="sqlite:///./_prod_host_check.db",
+               SECRET_KEY="x"*32, STAFF_TELEGRAM_IDS="9001", STAFF_TOTP_SECRET="y"*16,
+               S3_SECRET_KEY="z"*16, CLAMAV_HOST="localhost", TELEGRAM_BOT_TOKEN="tok",
+               PUBLIC_BASE_URL="https://club.example.com",
+               REDIS_URL=os.environ.get("REDIS_URL","redis://localhost:6379/0"))
+    code = textwrap.dedent("""
+        from fastapi.testclient import TestClient
+        from app.main import app
+        c = TestClient(app, base_url="http://club.example.com")
+        assert c.get("/health").status_code == 200
+        c2 = TestClient(app, base_url="http://evil.example.com")
+        assert c2.get("/health").status_code == 400
         print("OK")
     """)
     result = subprocess.run([sys.executable,"-c",code], cwd=os.path.dirname(os.path.dirname(__file__)),
