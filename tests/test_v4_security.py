@@ -1,7 +1,4 @@
 
-import os, time
-os.environ["DATABASE_URL"]="sqlite:///./test_v4.db"
-os.environ["SECRET_KEY"]="unit-test-secret"
 from app.auth import issue_session, verify_session
 
 def test_session_roundtrip():

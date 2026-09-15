@@ -1,6 +1,4 @@
 
-import os
-os.environ["DATABASE_URL"]="sqlite:///./headers.db"
 from fastapi.testclient import TestClient
 from app.main import app
 def test_headers():

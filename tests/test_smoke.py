@@ -1,6 +1,3 @@
-import os
-os.environ["DATABASE_URL"]="sqlite:///./test_club.db"
-os.environ["ADMIN_API_KEY"]="test-admin"
 from fastapi.testclient import TestClient
 from app.main import app
 client=TestClient(app)
