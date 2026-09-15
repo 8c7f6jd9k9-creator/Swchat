@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends, HTTPException, Form, Request, Header
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, text
 from .db import Base, engine, get_db
 from .models import *
 from .config import settings
