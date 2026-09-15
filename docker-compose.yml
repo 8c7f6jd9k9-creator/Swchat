@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: privateclub
+      POSTGRES_USER: privateclub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes: [redisdata:/data]
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-privateclub}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-change-me-please}
+    volumes: [miniodata:/data]
+    ports: ["9001:9001"]
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
+      SECRET_KEY: ${SECRET_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8000:8000"]
+    depends_on: [db,redis]
+  bot:
+    build: .
+    restart: unless-stopped
+    command: python -m app.bot
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+    depends_on: [db,redis]
+  worker:
+    build: .
+    restart: unless-stopped
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
+      VERIFICATION_RETENTION_DAYS: ${VERIFICATION_RETENTION_DAYS:-7}
+    depends_on: [db]
+  outbox-worker:
+    build: .
+    restart: unless-stopped
+    command: python -m app.outbox_worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    depends_on: [db]
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

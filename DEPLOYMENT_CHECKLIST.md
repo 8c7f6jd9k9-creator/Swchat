@@ -1,0 +1,11 @@
+# Production gate
+- [ ] HTTPS only; PostgreSQL/Redis not public.
+- [ ] Unique secrets outside Git.
+- [ ] Backup and restore tested.
+- [ ] Verification retention tested.
+- [ ] APPROVED gate, report and block tested.
+- [ ] Staff roles and emergency suspension reviewed.
+- [ ] Alembic migration reviewed on staging.
+- [ ] E2E tests pass.
+- [ ] Logs contain no tokens/initData/private media IDs.
+- [ ] Privacy/rules adapted to operator and jurisdiction.

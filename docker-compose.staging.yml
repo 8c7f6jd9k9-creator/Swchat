@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: privateclub
+      POSTGRES_USER: privateclub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redisdata:/data]
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes: [miniodata:/data]
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+  api:
+    build: .
+    environment:
+      ENVIRONMENT: staging
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD}@db:5432/privateclub
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      CLAMAV_HOST: clamav
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      SECRET_KEY: ${SECRET_KEY}
+      STAFF_TOTP_SECRET: ${STAFF_TOTP_SECRET}
+      STAFF_TELEGRAM_IDS: ${STAFF_TELEGRAM_IDS}
+    depends_on: [db,redis,minio,clamav]
+  bot:
+    build: .
+    command: python -m app.bot
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD}@db:5432/privateclub
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+    depends_on: [db]
+  worker:
+    build: .
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD}@db:5432/privateclub
+    depends_on: [db]
+  outbox-worker:
+    build: .
+    command: python -m app.outbox_worker
+    environment:
+      DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD}@db:5432/privateclub
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+    depends_on: [db]
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
