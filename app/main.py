@@ -8,10 +8,13 @@ from sqlalchemy import select, or_, func, text
 from .db import Base, engine, get_db
 from .models import *
 from .config import settings
-from .security import validate_telegram_init_data, require_admin_key
+from .security import validate_telegram_init_data
 
-Base.metadata.create_all(engine)
-app=FastAPI(title=settings.app_name, version="8.0")
+if settings.database_url.startswith("sqlite"):
+    # Postgres (staging/production) is schema-managed exclusively by Alembic;
+    # this only bootstraps the throwaway sqlite databases used by tests/local dev.
+    Base.metadata.create_all(engine)
+app=FastAPI(title=settings.app_name, version="10.0")
 from .production_guard import validate_production
 validate_production()
 from .middleware.security_headers import SecurityHeaders
@@ -41,25 +44,35 @@ def admin_page(request:Request): return templates.TemplateResponse("admin.html",
 @app.get("/rules",response_class=HTMLResponse)
 def rules(request:Request): return templates.TemplateResponse("rules.html",{"request":request,"version":settings.rules_version})
 
-@app.post("/api/auth/telegram")
-def telegram_auth(init_data:str=Form(...),db:Session=Depends(get_db)):
-    tg=validate_telegram_init_data(init_data)
-    tid=int(tg["id"])
-    u=db.execute(select(User).where(User.telegram_id==tid)).scalar_one_or_none()
-    if not u:
-        u=User(telegram_id=tid,telegram_username=tg.get("username"),status="NEW")
-        db.add(u); db.commit(); db.refresh(u)
-    return {"user_id":u.id,"status":u.status,"role":u.role}
+if settings.environment != "production":
+    # Local/dev-only convenience endpoints that bypass real Telegram authentication.
+    # Never registered in production - see the uid-path helpers below, which are
+    # genuine IDOR (no session/ownership check) by construction and exist only so
+    # this shortcut can drive them from a browser during local development.
+    @app.post("/api/demo/register")
+    def demo_register(alias:str=Form(...),age:int=Form(...),city:str=Form(...),profile_type:str=Form(...),looking_for:str=Form(...),about:str=Form(""),db:Session=Depends(get_db)):
+        if age<18: raise HTTPException(403,"Только 18+")
+        u=User(status="PROFILE_CREATED"); db.add(u); db.flush()
+        db.add(Profile(user_id=u.id,alias=alias.strip(),age=age,city=city.strip(),profile_type=profile_type,looking_for=looking_for,about=about))
+        db.add(Consent(user_id=u.id,kind="RULES_18_PLUS",version=settings.rules_version)); db.commit()
+        return {"user_id":u.id,"status":u.status}
 
-@app.post("/api/demo/register")
-def demo_register(alias:str=Form(...),age:int=Form(...),city:str=Form(...),profile_type:str=Form(...),looking_for:str=Form(...),about:str=Form(""),db:Session=Depends(get_db)):
-    if age<18: raise HTTPException(403,"Только 18+")
-    u=User(status="PROFILE_CREATED"); db.add(u); db.flush()
-    db.add(Profile(user_id=u.id,alias=alias.strip(),age=age,city=city.strip(),profile_type=profile_type,looking_for=looking_for,about=about))
-    db.add(Consent(user_id=u.id,kind="RULES_18_PLUS",version=settings.rules_version)); db.commit()
-    return {"user_id":u.id,"status":u.status}
+    @app.post("/api/users/{uid}/verification")
+    def demo_start_verification(uid:int,db:Session=Depends(get_db)):
+        return start_verification(uid,db)
 
-@app.post("/api/users/{uid}/verification")
+    @app.get("/api/users/{uid}/catalog")
+    def demo_catalog(uid:int,city:str|None=None,min_age:int=18,max_age:int=99,profile_type:str|None=None,db:Session=Depends(get_db)):
+        return catalog(uid,city,min_age,max_age,profile_type,db)
+
+    @app.post("/api/users/{uid}/like/{target}")
+    def demo_like(uid:int,target:int,db:Session=Depends(get_db)):
+        return like(uid,target,db)
+
+    @app.delete("/api/users/{uid}")
+    def demo_delete_account(uid:int,db:Session=Depends(get_db)):
+        return delete_account(uid,db)
+
 def start_verification(uid:int,db:Session=Depends(get_db)):
     u=user(db,uid)
     if u.status not in {"PROFILE_CREATED","REVISION_REQUIRED"}: raise HTTPException(409,"Недоступно для текущего статуса")
@@ -68,7 +81,6 @@ def start_verification(uid:int,db:Session=Depends(get_db)):
     u.status="VERIFICATION_PENDING"; db.commit()
     return {"code":code,"instruction":f"Отправьте боту фото или короткое видео, выполнив задание и показав код {code}."}
 
-@app.get("/api/users/{uid}/catalog")
 def catalog(uid:int,city:str|None=None,min_age:int=18,max_age:int=99,profile_type:str|None=None,db:Session=Depends(get_db)):
     me=user(db,uid); approved(me)
     rows=db.execute(select(User,Profile).join(Profile,Profile.user_id==User.id).where(
@@ -83,7 +95,6 @@ def catalog(uid:int,city:str|None=None,min_age:int=18,max_age:int=99,profile_typ
         out.append({"user_id":u.id,"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type,"looking_for":p.looking_for,"about":p.about})
     return out
 
-@app.post("/api/users/{uid}/like/{target}")
 def like(uid:int,target:int,db:Session=Depends(get_db)):
     a=user(db,uid); b=user(db,target); approved(a); approved(b)
     if uid==target: raise HTTPException(400,"Нельзя поставить лайк себе")
@@ -97,7 +108,6 @@ def like(uid:int,target:int,db:Session=Depends(get_db)):
             db.add(Match(user1_id=x,user2_id=y))
     db.commit(); return {"matched":mutual}
 
-@app.get("/api/users/{uid}/matches")
 def matches(uid:int,db:Session=Depends(get_db)):
     me=user(db,uid); approved(me)
     ms=db.execute(select(Match).where(or_(Match.user1_id==uid,Match.user2_id==uid))).scalars().all()
@@ -112,15 +122,12 @@ def matches(uid:int,db:Session=Depends(get_db)):
         result.append({"user_id":oid,"alias":p.alias if p else "Участник","contact":contact})
     return result
 
-@app.post("/api/users/{uid}/contact-reveal")
 def reveal(uid:int,value:bool=Form(...),db:Session=Depends(get_db)):
     u=user(db,uid); approved(u); u.contact_reveal=value; db.commit(); return {"value":value}
 
-@app.post("/api/users/{uid}/visibility")
 def visibility(uid:int,hidden:bool=Form(...),db:Session=Depends(get_db)):
     u=user(db,uid); approved(u); u.is_hidden=hidden; db.commit(); return {"hidden":hidden}
 
-@app.post("/api/users/{uid}/block/{target}")
 def block(uid:int,target:int,db:Session=Depends(get_db)):
     approved(user(db,uid)); user(db,target)
     if uid==target: raise HTTPException(400,"Нельзя заблокировать себя")
@@ -128,7 +135,6 @@ def block(uid:int,target:int,db:Session=Depends(get_db)):
         db.add(Block(from_user_id=uid,to_user_id=target))
     db.commit(); return {"ok":True}
 
-@app.post("/api/users/{uid}/complaint/{target}")
 def complaint(uid:int,target:int,reason:str=Form(...),db:Session=Depends(get_db)):
     approved(user(db,uid)); user(db,target)
     if uid==target: raise HTTPException(400,"Некорректная жалоба")
@@ -136,155 +142,41 @@ def complaint(uid:int,target:int,reason:str=Form(...),db:Session=Depends(get_db)
     db.add(Complaint(from_user_id=uid,to_user_id=target,reason=reason.strip()))
     db.commit(); return {"ok":True}
 
-@app.delete("/api/users/{uid}")
 def delete_account(uid:int,db:Session=Depends(get_db)):
     u=user(db,uid); u.status="DELETED"; u.is_hidden=True; u.contact_reveal=False
     db.add(Audit(actor=f"user:{uid}",action="delete_account",target_user_id=uid))
     db.commit(); return {"status":"DELETED"}
 
-@app.get("/api/admin/dashboard")
-def dashboard(x_admin_key:str|None=Header(None),db:Session=Depends(get_db)):
-    require_admin_key(x_admin_key)
-    counts={s:db.scalar(select(func.count()).select_from(User).where(User.status==s)) for s in ["ADMIN_REVIEW","APPROVED","SUSPENDED","BANNED"]}
-    counts["OPEN_COMPLAINTS"]=db.scalar(select(func.count()).select_from(Complaint).where(Complaint.status=="OPEN"))
-    return counts
-
-@app.get("/api/admin/pending")
-def pending(x_admin_key:str|None=Header(None),db:Session=Depends(get_db)):
-    require_admin_key(x_admin_key)
-    rows=db.execute(select(User).where(User.status.in_(["ADMIN_REVIEW","VERIFICATION_PENDING"])).order_by(User.created_at)).scalars().all()
-    result=[]
-    for u in rows:
-        p=db.execute(select(Profile).where(Profile.user_id==u.id)).scalar_one_or_none()
-        v=db.execute(select(Verification).where(Verification.user_id==u.id).order_by(Verification.id.desc())).scalars().first()
-        result.append({"id":u.id,"status":u.status,"risk_score":u.risk_score,
-          "profile":({"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type,"looking_for":p.looking_for,"about":p.about} if p else None),
-          "verification":({"id":v.id,"status":v.status,"media_type":v.media_type,"submitted":bool(v.media_file_id)} if v else None)})
-    return result
-
-@app.get("/api/admin/complaints")
-def complaints(x_admin_key:str|None=Header(None),db:Session=Depends(get_db)):
-    require_admin_key(x_admin_key)
-    return [{"id":c.id,"from":c.from_user_id,"to":c.to_user_id,"reason":c.reason,"status":c.status,"created_at":c.created_at.isoformat()} for c in db.execute(select(Complaint).order_by(Complaint.id.desc())).scalars()]
-
-@app.post("/api/admin/complaints/{cid}/close")
-def close_complaint(cid:int,x_admin_key:str|None=Header(None),db:Session=Depends(get_db)):
-    require_admin_key(x_admin_key); c=db.get(Complaint,cid)
-    if not c: raise HTTPException(404,"Жалоба не найдена")
-    c.status="CLOSED"; db.add(Audit(actor="admin",action="close_complaint",target_user_id=c.to_user_id,detail=str(cid))); db.commit()
-    return {"ok":True}
-
-@app.post("/api/admin/users/{uid}/{decision}")
-def moderate(uid:int,decision:str,reason:str=Form(""),x_admin_key:str|None=Header(None),db:Session=Depends(get_db)):
-    require_admin_key(x_admin_key); u=user(db,uid)
-    mapping={"approve":"APPROVED","reject":"REJECTED","revise":"REVISION_REQUIRED","suspend":"SUSPENDED","ban":"BANNED"}
-    if decision not in mapping: raise HTTPException(400,"Неизвестное решение")
-    u.status=mapping[decision]
-    v=db.execute(select(Verification).where(Verification.user_id==uid).order_by(Verification.id.desc())).scalars().first()
-    if v:
-        v.status={"approve":"APPROVED","reject":"REJECTED","revise":"REVISION_REQUIRED"}.get(decision,v.status)
-        v.note=reason; v.reviewed_at=datetime.utcnow()
-        if decision=="approve":
-            v.media_file_id=None  # минимизация хранения после решения
-    db.add(Audit(actor="admin",action=decision,target_user_id=uid,detail=reason)); db.commit()
-    return {"id":uid,"status":u.status}
-
-@app.post("/api/admin/cleanup-verification")
-def cleanup_verification(x_admin_key:str|None=Header(None),db:Session=Depends(get_db)):
-    require_admin_key(x_admin_key)
-    cutoff=datetime.utcnow()-timedelta(days=settings.verification_retention_days)
-    rows=db.execute(select(Verification).where(Verification.created_at<cutoff,Verification.media_file_id.is_not(None))).scalars().all()
-    for v in rows: v.media_file_id=None
-    db.commit(); return {"cleared":len(rows)}
+def _clear_verification_media(v:Verification):
+    """Delete the actual object-store object, not just the DB pointer to it."""
+    if v.storage_key:
+        try:
+            from .services.object_storage import delete_object
+            delete_object(v.storage_key)
+        except Exception:
+            return  # leave the pointer so the retention worker retries the real delete
+        v.storage_key=None
+    v.media_file_id=None
 
 @app.get("/health")
-def health(): return {"status":"ok","version":"3.0"}
-
-
-# ---- V4 authenticated API ----
-from fastapi import Body
-from .auth import issue_session, current_user, require_staff
-from .rate_limit import check as rate_check
-
-@app.post("/api/v4/auth/telegram")
-def v4_auth(init_data:str=Form(...),db:Session=Depends(get_db)):
-    tg=validate_telegram_init_data(init_data)
-    tid=int(tg["id"]); rate_check(f"auth:{tid}",10,60)
-    u=db.execute(select(User).where(User.telegram_id==tid)).scalar_one_or_none()
-    if not u:
-        u=User(telegram_id=tid,telegram_username=tg.get("username"),status="NEW")
-        db.add(u); db.commit(); db.refresh(u)
-    else:
-        u.telegram_username=tg.get("username"); db.commit()
-    return {"access_token":issue_session(u.id),"token_type":"bearer","status":u.status,"role":u.role}
-
-@app.get("/api/v4/me")
-def v4_me(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    u=current_user(db,authorization)
-    p=db.execute(select(Profile).where(Profile.user_id==u.id)).scalar_one_or_none()
-    return {"id":u.id,"status":u.status,"role":u.role,"hidden":u.is_hidden,"contact_reveal":u.contact_reveal,
-            "profile":({"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type,"looking_for":p.looking_for,"about":p.about} if p else None)}
-
-@app.get("/api/v4/catalog")
-def v4_catalog(city:str|None=None,min_age:int=18,max_age:int=99,authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); approved(me); rate_check(f"catalog:{me.id}",60,60)
-    return catalog(me.id,city,min_age,max_age,None,db)
-
-@app.post("/api/v4/like/{target}")
-def v4_like(target:int,authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); rate_check(f"like:{me.id}",40,60)
-    return like(me.id,target,db)
-
-@app.get("/api/v4/matches")
-def v4_matches(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); return matches(me.id,db)
-
-@app.post("/api/v4/block/{target}")
-def v4_block(target:int,authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); return block(me.id,target,db)
-
-@app.post("/api/v4/complaint/{target}")
-def v4_complaint(target:int,reason:str=Form(...),authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); rate_check(f"complaint:{me.id}",10,3600)
-    return complaint(me.id,target,reason,db)
-
-@app.post("/api/v4/settings")
-def v4_settings(hidden:bool=Form(False),contact_reveal:bool=Form(False),authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); approved(me)
-    me.is_hidden=hidden; me.contact_reveal=contact_reveal; db.commit()
-    return {"hidden":hidden,"contact_reveal":contact_reveal}
-
-@app.delete("/api/v4/me")
-def v4_delete(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    me=current_user(db,authorization); return delete_account(me.id,db)
-
-@app.get("/api/v4/staff/dashboard")
-def v4_staff_dashboard(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    staff=require_staff(db,authorization)
-    counts={s:db.scalar(select(func.count()).select_from(User).where(User.status==s)) for s in ["ADMIN_REVIEW","APPROVED","SUSPENDED","BANNED"]}
-    counts["OPEN_COMPLAINTS"]=db.scalar(select(func.count()).select_from(Complaint).where(Complaint.status=="OPEN"))
-    return counts
-
-@app.post("/api/v4/staff/users/{uid}/{decision}")
-def v4_staff_moderate(uid:int,decision:str,reason:str=Form(""),authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    staff=require_staff(db,authorization)
-    mapping={"approve":"APPROVED","reject":"REJECTED","revise":"REVISION_REQUIRED","suspend":"SUSPENDED","ban":"BANNED"}
-    if decision not in mapping: raise HTTPException(400,"Неизвестное решение")
-    if decision=="ban" and staff.role!="ADMIN": raise HTTPException(403,"Блокировка навсегда доступна только ADMIN")
-    u=user(db,uid); u.status=mapping[decision]
-    v=db.execute(select(Verification).where(Verification.user_id==uid).order_by(Verification.id.desc())).scalars().first()
-    if v:
-        v.status={"approve":"APPROVED","reject":"REJECTED","revise":"REVISION_REQUIRED"}.get(decision,v.status)
-        v.note=reason; v.reviewed_at=datetime.utcnow()
-        if decision=="approve": v.media_file_id=None
-    db.add(Audit(actor=f"staff:{staff.id}",action=decision,target_user_id=uid,detail=reason)); db.commit()
-    return {"id":uid,"status":u.status}
+def health(): return {"status":"ok","version":app.version}
 
 @app.get("/club",response_class=HTMLResponse)
 def club_page(request:Request): return templates.TemplateResponse("club.html",{"request":request})
 
 from .auth_v6 import issue as v6_issue,current as v6_current,rate as v6_rate
 from .redis_store import revoke_session as v6_revoke
+from .services.object_storage import signed_profile_url
+
+def _photo_urls(db:Session,uid:int):
+    photos=db.execute(select(ProfilePhoto).where(ProfilePhoto.user_id==uid,ProfilePhoto.status=="APPROVED").order_by(ProfilePhoto.position)).scalars().all()
+    out=[]
+    for p in photos:
+        if not p.storage_key: continue
+        try: out.append(signed_profile_url(p.storage_key))
+        except Exception: continue
+    return out
+
 @app.post("/api/v6/auth/telegram")
 def v6_auth(init_data:str=Form(...),db:Session=Depends(get_db)):
     tg=validate_telegram_init_data(init_data); tid=int(tg["id"]); v6_rate(f"auth:{tid}",10,60)
@@ -298,24 +190,48 @@ def v6_logout(authorization:str|None=Header(None)):
     return {"ok":True}
 @app.get("/api/v6/me")
 def v6_me(authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    u=v6_current(db,authorization); return {"id":u.id,"status":u.status,"role":u.role,"hidden":u.is_hidden}
+    u=v6_current(db,authorization)
+    p=db.execute(select(Profile).where(Profile.user_id==u.id)).scalar_one_or_none()
+    return {"id":u.id,"status":u.status,"role":u.role,"hidden":u.is_hidden,"contact_reveal":u.contact_reveal,
+            "profile":({"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type,"looking_for":p.looking_for,"about":p.about} if p else None),
+            "photos":_photo_urls(db,u.id)}
+@app.post("/api/v6/verification")
+def v6_start_verification(authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization); return start_verification(u.id,db)
 @app.get("/api/v6/catalog")
 def v6_catalog(city:str|None=None,min_age:int=18,max_age:int=99,authorization:str|None=Header(None),db:Session=Depends(get_db)):
-    u=v6_current(db,authorization); approved(u); v6_rate(f"catalog:{u.id}",60,60); return catalog(u.id,city,min_age,max_age,None,db)
+    u=v6_current(db,authorization); approved(u); v6_rate(f"catalog:{u.id}",60,60)
+    rows=catalog(u.id,city,min_age,max_age,None,db)
+    for r in rows: r["photos"]=_photo_urls(db,r["user_id"])
+    return rows
 @app.post("/api/v6/like/{target}")
 def v6_like(target:int,authorization:str|None=Header(None),db:Session=Depends(get_db)):
     u=v6_current(db,authorization); v6_rate(f"like:{u.id}",40,60); return like(u.id,target,db)
 @app.get("/api/v6/matches")
 def v6_matches(authorization:str|None=Header(None),db:Session=Depends(get_db)):
     u=v6_current(db,authorization); return matches(u.id,db)
+@app.post("/api/v6/contact-reveal")
+def v6_contact_reveal(value:bool=Form(...),authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization); return reveal(u.id,value,db)
+@app.post("/api/v6/visibility")
+def v6_visibility(hidden:bool=Form(...),authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization); return visibility(u.id,hidden,db)
+@app.post("/api/v6/block/{target}")
+def v6_block(target:int,authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization); return block(u.id,target,db)
+@app.post("/api/v6/complaint/{target}")
+def v6_complaint(target:int,reason:str=Form(...),authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization); v6_rate(f"complaint:{u.id}",10,3600); return complaint(u.id,target,reason,db)
+@app.delete("/api/v6/me")
+def v6_delete(authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    u=v6_current(db,authorization); v6_revoke(authorization[7:]); return delete_account(u.id,db)
 
-# ---- V7 staff auth + transactional notification outbox ----
+# ---- Staff API: Telegram allowlist + TOTP second factor + transactional outbox ----
+# Staff sign-in is v8's TOTP-gated /api/v8/staff/auth/telegram only - there is no
+# TOTP-less staff login path in production; day-to-day staff operations below just
+# consume the session that login already issued.
 import json as _json
 from .staff_auth import login_staff as v7_staff_login,staff_current as v7_staff_current
-
-@app.post("/api/v7/staff/auth/telegram")
-def v7_staff_auth(init_data:str=Form(...),db:Session=Depends(get_db)):
-    return v7_staff_login(init_data,db)
 
 @app.get("/api/v7/staff/pending")
 def v7_staff_pending(authorization:str|None=Header(None),db:Session=Depends(get_db)):
@@ -325,9 +241,46 @@ def v7_staff_pending(authorization:str|None=Header(None),db:Session=Depends(get_
     for u in rows:
         p=db.execute(select(Profile).where(Profile.user_id==u.id)).scalar_one_or_none()
         v=db.execute(select(Verification).where(Verification.user_id==u.id).order_by(Verification.id.desc())).scalars().first()
-        result.append({"id":u.id,"status":u.status,"profile":{"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type} if p else None,
-                       "verification":{"status":v.status,"submitted":bool(v.media_file_id)} if v else None})
+        result.append({"id":u.id,"status":u.status,"risk_score":u.risk_score,
+                       "profile":{"alias":p.alias,"age":p.age,"city":p.city,"profile_type":p.profile_type,"looking_for":p.looking_for,"about":p.about} if p else None,
+                       "verification":{"id":v.id,"status":v.status,"media_type":v.media_type,"submitted":bool(v.storage_key)} if v else None})
     return result
+
+@app.get("/api/v7/staff/verification/{vid}/media")
+def v7_staff_verification_media(vid:int,authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    staff=v7_staff_current(db,authorization)
+    v=db.get(Verification,vid)
+    if not v or not v.storage_key: raise HTTPException(404,"Материал недоступен")
+    from .services.object_storage import staff_signed_verification_url
+    url=staff_signed_verification_url(v.storage_key)
+    db.add(Audit(actor=f"staff:{staff.id}",action="view_verification_media",target_user_id=v.user_id,detail=f"verification={vid}"))
+    db.commit()
+    return {"url":url,"expires_in_seconds":300}
+
+@app.get("/api/v7/staff/photos/pending")
+def v7_staff_photos_pending(authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    v7_staff_current(db,authorization)
+    rows=db.execute(select(ProfilePhoto).where(ProfilePhoto.status=="PENDING").order_by(ProfilePhoto.id)).scalars().all()
+    out=[]
+    for p in rows:
+        url=None
+        if p.storage_key:
+            try: url=signed_profile_url(p.storage_key,minutes=5)
+            except Exception: pass
+        out.append({"id":p.id,"user_id":p.user_id,"url":url})
+    return out
+
+@app.post("/api/v7/staff/photos/{pid}/{decision}")
+def v7_staff_photo_decision(pid:int,decision:str,authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    staff=v7_staff_current(db,authorization)
+    if decision not in {"approve","reject"}: raise HTTPException(400,"Неизвестное решение")
+    p=db.get(ProfilePhoto,pid)
+    if not p: raise HTTPException(404,"Фото не найдено")
+    p.status="APPROVED" if decision=="approve" else "REJECTED"
+    p.approved = decision=="approve"
+    db.add(Audit(actor=f"staff:{staff.id}",action=f"photo_{decision}",target_user_id=p.user_id,detail=f"photo={pid}"))
+    db.commit()
+    return {"id":pid,"status":p.status}
 
 @app.post("/api/v7/staff/users/{uid}/{decision}")
 def v7_staff_moderate(uid:int,decision:str,reason:str=Form(""),authorization:str|None=Header(None),db:Session=Depends(get_db)):
@@ -340,21 +293,55 @@ def v7_staff_moderate(uid:int,decision:str,reason:str=Form(""),authorization:str
     if v:
         v.status={"approve":"APPROVED","reject":"REJECTED","revise":"REVISION_REQUIRED"}.get(decision,v.status)
         v.note=reason;v.reviewed_at=datetime.utcnow()
-        if decision=="approve":v.media_file_id=None
-    text={"approve":"Ваша анкета одобрена. Доступ к закрытому каталогу открыт.",
+        if decision=="approve": _clear_verification_media(v)
+    msg={"approve":"Ваша анкета одобрена. Доступ к закрытому каталогу открыт.",
           "revise":"Администратор запросил повторную верификацию.",
           "reject":"Заявка не одобрена.",
           "suspend":"Доступ временно ограничен.",
           "ban":"Доступ прекращён администрацией."}[decision]
-    db.add(Outbox(kind="TELEGRAM",target_user_id=uid,payload=_json.dumps({"text":text},ensure_ascii=False)))
+    db.add(Outbox(kind="TELEGRAM",target_user_id=uid,payload=_json.dumps({"text":msg},ensure_ascii=False)))
     db.add(Audit(actor=f"staff:{staff.id}",action=decision,target_user_id=uid,detail=reason))
     db.commit()
     return {"id":uid,"status":u.status}
 
-# ---- V8 staff second factor ----
+@app.get("/api/v7/staff/complaints")
+def v7_staff_complaints(authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    v7_staff_current(db,authorization)
+    return [{"id":c.id,"from":c.from_user_id,"to":c.to_user_id,"reason":c.reason,"status":c.status,"created_at":c.created_at.isoformat()}
+            for c in db.execute(select(Complaint).order_by(Complaint.id.desc())).scalars()]
+
+@app.post("/api/v7/staff/complaints/{cid}/close")
+def v7_staff_close_complaint(cid:int,authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    staff=v7_staff_current(db,authorization)
+    c=db.get(Complaint,cid)
+    if not c: raise HTTPException(404,"Жалоба не найдена")
+    c.status="CLOSED"; db.add(Audit(actor=f"staff:{staff.id}",action="close_complaint",target_user_id=c.to_user_id,detail=str(cid))); db.commit()
+    return {"ok":True}
+
+@app.get("/api/v7/staff/dashboard")
+def v7_staff_dashboard(authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    v7_staff_current(db,authorization)
+    counts={s:db.scalar(select(func.count()).select_from(User).where(User.status==s)) for s in ["ADMIN_REVIEW","APPROVED","SUSPENDED","BANNED"]}
+    counts["OPEN_COMPLAINTS"]=db.scalar(select(func.count()).select_from(Complaint).where(Complaint.status=="OPEN"))
+    counts["PENDING_PHOTOS"]=db.scalar(select(func.count()).select_from(ProfilePhoto).where(ProfilePhoto.status=="PENDING"))
+    return counts
+
+@app.post("/api/v7/staff/cleanup-verification")
+def v7_staff_cleanup_verification(authorization:str|None=Header(None),db:Session=Depends(get_db)):
+    staff=v7_staff_current(db,authorization)
+    cutoff=datetime.utcnow()-timedelta(days=settings.verification_retention_days)
+    rows=db.execute(select(Verification).where(Verification.created_at<cutoff).where(
+        or_(Verification.media_file_id.is_not(None),Verification.storage_key.is_not(None)))).scalars().all()
+    for v in rows: _clear_verification_media(v)
+    if rows: db.add(Audit(actor=f"staff:{staff.id}",action="manual_verification_cleanup",detail=f"cleared={len(rows)}"))
+    db.commit(); return {"cleared":len(rows)}
+
+# ---- Staff sign-in: Telegram allowlist + TOTP second factor (v8) ----
 from .staff_2fa import verify as v8_verify_totp
 @app.post("/api/v8/staff/auth/telegram")
 def v8_staff_auth(init_data:str=Form(...),totp_code:str=Form(...),db:Session=Depends(get_db)):
+    tg=validate_telegram_init_data(init_data)
+    v6_rate(f"staff-totp:{tg['id']}",5,300)
     v8_verify_totp(totp_code)
     return v7_staff_login(init_data,db)
 

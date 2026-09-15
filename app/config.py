@@ -4,7 +4,6 @@ class Settings(BaseSettings):
     app_name: str = "Private Club"
     database_url: str = "sqlite:///./club.db"
     secret_key: str = "change-me"
-    admin_api_key: str = ""
     telegram_bot_token: str = ""
     public_base_url: str = "http://localhost:8000"
     rules_version: str = "1.0"

@@ -6,6 +6,14 @@ from sqlalchemy import select
 from .config import settings
 from .db import SessionLocal
 from .models import User, Consent, Verification, ProfilePhoto
+from .services.upload_validation import validate_profile, validate_verification
+from .services.malware import scan
+from .services.object_storage import put_profile_photo, put_verification
+
+async def _download(bot: Bot, file_id: str) -> bytes:
+    f = await bot.get_file(file_id)
+    buf = await bot.download_file(f.file_path)
+    return buf.read()
 
 dp=Dispatcher()
 def keyboard(rows):
@@ -35,22 +43,39 @@ async def age_yes(c:types.CallbackQuery):
         reply_markup=keyboard(rows) if rows else None); await c.answer()
 
 @dp.message(F.photo | F.video)
-async def media(m:types.Message):
+async def media(m:types.Message,bot:Bot):
     with SessionLocal() as db:
         u=db.execute(select(User).where(User.telegram_id==m.from_user.id)).scalar_one_or_none()
         if not u: return
         if u.status=="VERIFICATION_PENDING":
             v=db.execute(select(Verification).where(Verification.user_id==u.id).order_by(Verification.id.desc())).scalars().first()
             if not v: return
-            if m.photo: v.media_file_id=m.photo[-1].file_id; v.media_type="photo"
-            else: v.media_file_id=m.video.file_id; v.media_type="video"
+            file_id = m.photo[-1].file_id if m.photo else m.video.file_id
+            try:
+                data = await _download(bot, file_id)
+                mime = validate_verification(data)
+                scan(data)
+                key = put_verification(data, mime)
+            except Exception:
+                await m.answer("Не удалось принять файл верификации. Отправьте фото или короткое видео в поддерживаемом формате (JPEG/PNG/WEBP/MP4, до 25 МБ).")
+                return
+            v.media_file_id=file_id; v.media_type="photo" if m.photo else "video"; v.storage_key=key
             v.status="SUBMITTED"; u.status="ADMIN_REVIEW"; db.commit()
             await m.answer("Верификация получена. Анкета передана администратору. До одобрения каталог закрыт.")
         elif u.status in {"AGE_CONFIRMED","PROFILE_CREATED","APPROVED"} and m.photo:
             count=len(db.execute(select(ProfilePhoto).where(ProfilePhoto.user_id==u.id)).scalars().all())
             if count>=settings.max_profile_photos:
                 await m.answer("Достигнут лимит фотографий профиля."); return
-            db.add(ProfilePhoto(user_id=u.id,telegram_file_id=m.photo[-1].file_id,position=count,approved=False)); db.commit()
+            file_id = m.photo[-1].file_id
+            try:
+                data = await _download(bot, file_id)
+                mime = validate_profile(data)
+                scan(data)
+                key = put_profile_photo(data, mime)
+            except Exception:
+                await m.answer("Не удалось принять фото. Поддерживаются JPEG/PNG/WEBP до 10 МБ.")
+                return
+            db.add(ProfilePhoto(user_id=u.id,telegram_file_id=file_id,storage_key=key,content_type=mime,position=count,status="PENDING",approved=False)); db.commit()
             await m.answer("Фото профиля принято и будет доступно после модерации.")
 
 async def main():

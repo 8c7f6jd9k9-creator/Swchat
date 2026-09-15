@@ -37,3 +37,9 @@ def delete_object(key:str):
 
 def signed_verification_url(*args,**kwargs):
     raise PermissionError("Verification media is staff-only and is never issued through member media API")
+
+def staff_signed_verification_url(key:str,minutes:int=5)->str:
+    """Short-lived signed URL for staff review only. Callers must have already
+    authenticated the caller as MODERATOR/ADMIN before invoking this."""
+    if not key.startswith("verification/"): raise ValueError("Not a verification media key")
+    return _client().presigned_get_object(settings.s3_bucket,key,expires=timedelta(minutes=minutes))

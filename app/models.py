@@ -31,7 +31,10 @@ class ProfilePhoto(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     telegram_file_id: Mapped[str] = mapped_column(String(255))
+    storage_key: Mapped[str|None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str|None] = mapped_column(String(40), nullable=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class Consent(Base):
@@ -50,6 +53,7 @@ class Verification(Base):
     status: Mapped[str] = mapped_column(String(30), default="PENDING")
     media_file_id: Mapped[str|None] = mapped_column(String(255), nullable=True)
     media_type: Mapped[str|None] = mapped_column(String(20), nullable=True)
+    storage_key: Mapped[str|None] = mapped_column(String(255), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     reviewed_at: Mapped[datetime|None] = mapped_column(DateTime, nullable=True)

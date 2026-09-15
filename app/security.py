@@ -22,7 +22,3 @@ def validate_telegram_init_data(init_data: str, max_age: int = 3600) -> dict:
         return json.loads(data["user"])
     except Exception:
         raise HTTPException(401, "Invalid Telegram user payload")
-
-def require_admin_key(value: str|None):
-    if not settings.admin_api_key or not value or not hmac.compare_digest(value, settings.admin_api_key):
-        raise HTTPException(401, "Administrator authorization required")

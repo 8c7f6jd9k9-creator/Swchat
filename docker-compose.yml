@@ -21,40 +21,59 @@ services:
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-change-me-please}
     volumes: [miniodata:/data]
     ports: ["9001:9001"]
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
   api:
     build: .
     restart: unless-stopped
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
       SECRET_KEY: ${SECRET_KEY}
-      ADMIN_API_KEY: ${ADMIN_API_KEY}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
       REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      CLAMAV_HOST: clamav
+      STAFF_TOTP_SECRET: ${STAFF_TOTP_SECRET}
+      STAFF_TELEGRAM_IDS: ${STAFF_TELEGRAM_IDS}
     ports: ["8000:8000"]
-    depends_on: [db,redis]
+    depends_on: [db,redis,minio,clamav]
   bot:
     build: .
     restart: unless-stopped
     command: python -m app.bot
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-    depends_on: [db,redis]
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      CLAMAV_HOST: clamav
+    depends_on: [db,minio,clamav]
   worker:
     build: .
     restart: unless-stopped
     command: python -m app.worker
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
       VERIFICATION_RETENTION_DAYS: ${VERIFICATION_RETENTION_DAYS:-7}
-    depends_on: [db]
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+    depends_on: [db,minio]
   outbox-worker:
     build: .
     restart: unless-stopped
     command: python -m app.outbox_worker
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+psycopg://privateclub:${POSTGRES_PASSWORD:-change-me}@db:5432/privateclub
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
     depends_on: [db]
