@@ -31,6 +31,11 @@
 </main><script>
 let token='',me=null;
 const auth=()=>({Authorization:'Bearer '+token});
+// Profile text (alias/about/city/looking_for/profile_type) and complaint
+// reasons are member-supplied and rendered via innerHTML below - escape
+// before interpolating, or a malicious profile becomes stored XSS against
+// anyone who views it in the catalog.
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function login(){
   const init=window.Telegram?.WebApp?.initData||'';
   if(!init){msg.innerHTML='<div class="error">Откройте страницу как Telegram Mini App.</div>';return}
@@ -70,13 +75,13 @@ async function startVerification(){const r=await fetch('/api/v6/verification',{m
 function showTab(name){['catalog','matches','settings'].forEach(t=>document.getElementById('tab-'+t).hidden=t!==name);if(name==='catalog')loadCatalog();if(name==='matches')loadMatches()}
 async function loadCatalog(){
   const r=await fetch('/api/v6/catalog',{headers:auth()});const a=await r.json();
-  cards.innerHTML=a.length?a.map(p=>`<article class="profilecard"><div class="photoPlaceholder">${p.photos&&p.photos[0]?`<img src="${p.photos[0]}" style="width:100%;height:100%;object-fit:cover">`:`<span>${p.alias.slice(0,1).toUpperCase()}</span>`}</div><div class="profilebody"><span class="pill">${p.profile_type}</span><h3>${p.alias}, ${p.age}</h3><p>${p.city}</p><p class="muted">${p.about||'Описание пока не заполнено'}</p><small>Ищет: ${p.looking_for}</small><div class="swipeactions"><button class="secondary" onclick="reportUser(${p.user_id})">Пожаловаться</button><button onclick="like(${p.user_id})">Нравится ♥</button></div><button class="secondary compact" style="margin-top:8px" onclick="blockUser(${p.user_id})">Заблокировать</button></div></article>`).join(''):'<div class="card">Подходящих анкет пока нет.</div>'}
+  cards.innerHTML=a.length?a.map(p=>`<article class="profilecard"><div class="photoPlaceholder">${p.photos&&p.photos[0]?`<img src="${esc(p.photos[0])}" style="width:100%;height:100%;object-fit:cover">`:`<span>${esc(p.alias.slice(0,1).toUpperCase())}</span>`}</div><div class="profilebody"><span class="pill">${esc(p.profile_type)}</span><h3>${esc(p.alias)}, ${p.age}</h3><p>${esc(p.city)}</p><p class="muted">${esc(p.about)||'Описание пока не заполнено'}</p><small>Ищет: ${esc(p.looking_for)}</small><div class="swipeactions"><button class="secondary" onclick="reportUser(${p.user_id})">Пожаловаться</button><button onclick="like(${p.user_id})">Нравится ♥</button></div><button class="secondary compact" style="margin-top:8px" onclick="blockUser(${p.user_id})">Заблокировать</button></div></article>`).join(''):'<div class="card">Подходящих анкет пока нет.</div>'}
 async function like(id){const r=await fetch('/api/v6/like/'+id,{method:'POST',headers:auth()});const j=await r.json();if(j.matched)alert('Взаимная симпатия! Контакт открывается только по взаимному согласию.');loadCatalog()}
 async function blockUser(id){if(!confirm('Заблокировать участника?'))return;await fetch('/api/v6/block/'+id,{method:'POST',headers:auth()});loadCatalog()}
 async function reportUser(id){const reason=prompt('Причина жалобы');if(!reason)return;const fd=new FormData();fd.append('reason',reason);await fetch('/api/v6/complaint/'+id,{method:'POST',headers:auth(),body:fd});alert('Жалоба отправлена администрации.')}
 async function loadMatches(){
   const r=await fetch('/api/v6/matches',{headers:auth()});const a=await r.json();
-  matchList.innerHTML=a.length?a.map(m=>`<div class="card"><b>${m.alias}</b><p class="muted">${m.contact?('Контакт: '+m.contact):'Контакт скрыт до взаимного согласия обеих сторон.'}</p></div>`).join(''):'<div class="card muted">Мэтчей пока нет.</div>'}
+  matchList.innerHTML=a.length?a.map(m=>`<div class="card"><b>${esc(m.alias)}</b><p class="muted">${m.contact?('Контакт: '+esc(m.contact)):'Контакт скрыт до взаимного согласия обеих сторон.'}</p></div>`).join(''):'<div class="card muted">Мэтчей пока нет.</div>'}
 async function setVisibility(){const fd=new FormData();fd.append('hidden',hiddenToggle.checked);await fetch('/api/v6/visibility',{method:'POST',headers:auth(),body:fd})}
 async function setContactReveal(){const fd=new FormData();fd.append('value',contactToggle.checked);await fetch('/api/v6/contact-reveal',{method:'POST',headers:auth(),body:fd})}
 async function deleteAccount(){if(!confirm('Удалить аккаунт безвозвратно?'))return;await fetch('/api/v6/me',{method:'DELETE',headers:auth()});token='';location.reload()}

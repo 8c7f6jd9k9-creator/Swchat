@@ -19,6 +19,12 @@
 </main><script>
 let token='',role='';
 const auth=()=>({Authorization:'Bearer '+token});
+// Profile text and complaint reasons are member-supplied and rendered via
+// innerHTML below - escape before interpolating. This matters even more
+// here than on the member side: unescaped member input reaching this page
+// unsanitized would be stored XSS running inside a signed-in moderator's
+// session (token, staff API access) rather than just another member's.
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function login(){
   const init=window.Telegram?.WebApp?.initData||'';
   if(!init){msg.innerHTML='<div class="error">Откройте эту страницу как Telegram Mini App (команда /staff у бота).</div>';return}
@@ -36,7 +42,7 @@ async function loadQueue(){
   const s=await(await fetch('/api/v7/staff/dashboard',{headers:auth()})).json();
   stats.innerHTML=Object.entries(s).map(x=>'<div><b>'+x[1]+'</b><small>'+x[0]+'</small></div>').join('');
   const a=await(await fetch('/api/v7/staff/pending',{headers:auth()})).json();
-  queue.innerHTML=a.length?a.map(x=>`<article class="candidate"><div><span class="pill">${x.status}</span><h3>${x.profile?.alias||'Без анкеты'} · ${x.profile?.age||'—'}</h3><p>${x.profile?.city||''} · ${x.profile?.profile_type||''}</p><p class="muted">${x.profile?.about||''}</p><small>Risk indicator: ${x.risk_score} · verification: ${x.verification?.status||'нет'} ${x.verification?.submitted?`· <a href="#" onclick="viewVerification(${x.verification.id});return false">материал</a>`:''}</small></div><div class="actions"><button onclick="act(${x.id},'approve')">Одобрить</button><button class="secondary" onclick="act(${x.id},'revise')">Повторная верификация</button><button class="secondary" onclick="act(${x.id},'reject')">Отклонить</button><button class="secondary" onclick="act(${x.id},'suspend')">Приостановить</button>${role==='ADMIN'?`<button class="danger" onclick="act(${x.id},'ban')">BAN</button>`:''}</div></article>`).join(''):'<p class="muted">Очередь пуста.</p>'}
+  queue.innerHTML=a.length?a.map(x=>`<article class="candidate"><div><span class="pill">${esc(x.status)}</span><h3>${esc(x.profile?.alias)||'Без анкеты'} · ${x.profile?.age??'—'}</h3><p>${esc(x.profile?.city)} · ${esc(x.profile?.profile_type)}</p><p class="muted">${esc(x.profile?.about)}</p><small>Risk indicator: ${x.risk_score} · verification: ${esc(x.verification?.status)||'нет'} ${x.verification?.submitted?`· <a href="#" onclick="viewVerification(${x.verification.id});return false">материал</a>`:''}</small></div><div class="actions"><button onclick="act(${x.id},'approve')">Одобрить</button><button class="secondary" onclick="act(${x.id},'revise')">Повторная верификация</button><button class="secondary" onclick="act(${x.id},'reject')">Отклонить</button><button class="secondary" onclick="act(${x.id},'suspend')">Приостановить</button>${role==='ADMIN'?`<button class="danger" onclick="act(${x.id},'ban')">BAN</button>`:''}</div></article>`).join(''):'<p class="muted">Очередь пуста.</p>'}
 async function act(id,a){const fd=new FormData();fd.append('reason',prompt('Комментарий/причина (можно пусто)')||'');const r=await fetch('/api/v7/staff/users/'+id+'/'+a,{method:'POST',headers:auth(),body:fd});if(!r.ok){const j=await r.json();alert(j.detail||'Ошибка')}loadQueue()}
 async function viewVerification(vid){const r=await fetch('/api/v7/staff/verification/'+vid+'/media',{headers:auth()});const j=await r.json();if(r.ok)window.open(j.url,'_blank');else alert(j.detail||'Материал недоступен')}
 
@@ -47,7 +53,7 @@ async function photoDecision(id,d){await fetch('/api/v7/staff/photos/'+id+'/'+d,
 
 async function loadComplaints(){
   const a=await(await fetch('/api/v7/staff/complaints',{headers:auth()})).json();
-  complaintQueue.innerHTML=a.length?a.map(c=>`<article class="candidate"><div><span class="pill">${c.status}</span><p>От #${c.from} на #${c.to}</p><p class="muted">${c.reason}</p><small>${c.created_at}</small></div><div class="actions">${c.status==='OPEN'?`<button onclick="closeComplaint(${c.id})">Закрыть</button>`:''}</div></article>`).join(''):'<p class="muted">Жалоб нет.</p>'}
+  complaintQueue.innerHTML=a.length?a.map(c=>`<article class="candidate"><div><span class="pill">${esc(c.status)}</span><p>От #${c.from} на #${c.to}</p><p class="muted">${esc(c.reason)}</p><small>${esc(c.created_at)}</small></div><div class="actions">${c.status==='OPEN'?`<button onclick="closeComplaint(${c.id})">Закрыть</button>`:''}</div></article>`).join(''):'<p class="muted">Жалоб нет.</p>'}
 async function closeComplaint(id){await fetch('/api/v7/staff/complaints/'+id+'/close',{method:'POST',headers:auth()});loadComplaints()}
 
 async function loadHealth(){
