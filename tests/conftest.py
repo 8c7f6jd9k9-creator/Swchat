@@ -38,3 +38,13 @@ try:
     _redis_mod.Redis.from_url(os.environ["REDIS_URL"], socket_timeout=2).flushdb()
 except Exception:
     pass
+
+# app.main creates sqlite tables as an import side effect (see app/main.py).
+# A test module that only touches app.db/app.models directly (e.g.
+# test_outbox_worker.py) would otherwise depend on some other test module
+# happening to import app.main first - create the schema here instead so
+# every test module works whether run alone or as part of the full suite.
+from app.db import Base, engine
+if engine.url.get_backend_name() == "sqlite":
+    from app import models  # noqa: F401 - registers tables on Base.metadata
+    Base.metadata.create_all(engine)
