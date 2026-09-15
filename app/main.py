@@ -17,8 +17,12 @@ if settings.database_url.startswith("sqlite"):
 app=FastAPI(title=settings.app_name, version="10.0")
 from .production_guard import validate_production
 validate_production()
+from .logging_config import configure_logging
+configure_logging()
 from .middleware.security_headers import SecurityHeaders
+from .middleware.access_log import AccessLog
 app.add_middleware(SecurityHeaders)
+app.add_middleware(AccessLog)
 if settings.environment=="production":
     # Reject requests carrying a forged/unexpected Host header (cache
     # poisoning, absolute-URL confusion) instead of trusting whatever the
